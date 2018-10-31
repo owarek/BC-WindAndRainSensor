@@ -1,12 +1,9 @@
 /*
-Version: 1.0
-Date: 26.10.2018
+Version: 1.1
+Date: 31.10.2018
 Info:
-
 Měření rychlosti a směru větru společně se srážkoměrem. Naměřená data jsou navzorkována a poté každých 10 minut odeslána do BigClown hubu.
-
 Kód převzat a upraven z https://github.com/hubmartin/bcf-sigfox-wind-station
-
 Zapojení do sensor modulu:
 Kanál A: anemometr (proti zemi)
 Kanál B: korouhvička (proti zemi)
@@ -133,8 +130,8 @@ float windVoltageToAngle(float voltage)
     return smallestDifferenceAngle;
 }
 
+float windAdcVoltage = 0;
 uint16_t windAdc = 0;
-float angleAverageOut;
 
 void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *param)
 {
@@ -145,14 +142,20 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
     {
         if(channel == BC_ADC_CHANNEL_A5)
         {
+            #define ADC_VALUE_TO_VOLTAGE2(__RESULT__)   (((__RESULT__) * (0.00004743)))
             // Disable pullup
             bc_module_sensor_set_pull(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_PULL_NONE);
 
-            bc_adc_get_value(BC_ADC_CHANNEL_A5, &windAdc);
-            windAngle = windVoltageToAngle(windAdc);
+            bc_adc_async_get_value(BC_ADC_CHANNEL_A5, &windAdc);
+            windAdcVoltage = ADC_VALUE_TO_VOLTAGE2(windAdc);
+            windAngle = windVoltageToAngle(windAdcVoltage);
 
             angle_average_add(windAngle);
             windAngleAverage = angle_average_get();
+
+            //bc_radio_pub_float("meteo/debug/windVoltage",&windAdcVoltage);
+            //uint32_t windAdcPub = (uint32_t)windAdc;
+            //bc_radio_pub_uint32("meteo/debug/windVoltage",&windAdcPub);
 
             // Start battery measurement, default library collides sometimes with ADC measurement
             // so I use manual solution
@@ -165,10 +168,11 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
             #define ADC_VALUE_TO_VOLTAGE(__RESULT__)   (((__RESULT__) * (1 / 0.13)))
             uint16_t val;
             bc_adc_get_value(BC_ADC_CHANNEL_A0, &val);
-            //_bc_module_battery_measurement(0);
             bc_gpio_set_output(BC_GPIO_P1, 0);
 
             batteryVoltage = ADC_VALUE_TO_VOLTAGE(val);
+
+            //bc_radio_pub_float("meteo/debug/windVoltage",&batteryVoltage);
         }
 
     }
@@ -215,14 +219,19 @@ void application_init(void)
     // Initialize ADC channel - wind direction
     bc_adc_init();
     bc_adc_set_event_handler(BC_ADC_CHANNEL_A5, adc_event_handler, NULL);
+    bc_adc_resolution_set(BC_ADC_CHANNEL_A5, BC_ADC_RESOLUTION_12_BIT);
+    //bc_adc_oversampling_set(BC_ADC_CHANNEL_A5, BC_ADC_OVERSAMPLING_256);
+
+    //bc_adc_set_event_handler(BC_ADC_CHANNEL_A0, adc_event_handler, NULL);
+    //bc_adc_resolution_set(BC_ADC_CHANNEL_A0, BC_ADC_RESOLUTION_12_BIT);
+    //bc_adc_oversampling_set(BC_ADC_CHANNEL_A0, BC_ADC_OVERSAMPLING_256);
 
     // Battery voltage
     bc_gpio_init(BC_GPIO_P1);
-    //_bc_module_battery_measurement(0);
     bc_gpio_set_output(BC_GPIO_P1, 0);
     bc_gpio_set_mode(BC_GPIO_P1, BC_GPIO_MODE_OUTPUT);
 
-    bc_adc_init();
+    //bc_adc_init();
     bc_adc_set_event_handler(BC_ADC_CHANNEL_A0, adc_event_handler, NULL);
 
     // Publish scheduler is divided to two tasks (wind data and rain+battery data) one second between each.
