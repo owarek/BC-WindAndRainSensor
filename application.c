@@ -1,6 +1,6 @@
 /*
-Version: 1.1
-Date: 31.10.2018
+Version: 1.3
+Date: 1.11.2018
 Info:
 Měření rychlosti a směru větru společně se srážkoměrem. Naměřená data jsou navzorkována a poté každých 10 minut odeslána do BigClown hubu.
 Kód převzat a upraven z https://github.com/hubmartin/bcf-sigfox-wind-station
@@ -16,7 +16,9 @@ Kanál C: srážkoměr (proti zemi)
 #include "angle_average.h"
 
 bc_led_t led;
-bc_tag_temperature_t temperature_tag_internal;
+//bc_tag_temperature_t temperature_tag_internal;
+bc_tmp112_t temp;
+
 
 float windSpeedAverage = 0;
 float windSpeedMaximum = 0;
@@ -27,6 +29,8 @@ float rainMM = 0;              // mm srážek od posledního odeslání dat
 float rainTotalMM = 0;         // mm srážek od zapnutí modulu
 float mmInClick = 0.186267;    // mm srážek v jednom impulsu srážkoměru
 
+float internalTemperature = 0; 
+float internalTemperatureAverage = 0;
 bc_switch_t rain_gauge;
 
 #define MAIN_TASK_PERIOD_SECONDS 15
@@ -35,29 +39,31 @@ bc_switch_t rain_gauge;
 
 // Data stream for wind speed averaging
 BC_DATA_STREAM_FLOAT_BUFFER(stream_buffer_wind_speed, WIND_DATA_STREAM_SAMPLES)
+BC_DATA_STREAM_FLOAT_BUFFER(stream_buffer_internal_temperature, WIND_DATA_STREAM_SAMPLES)
 bc_data_stream_t stream_wind_speed;
+bc_data_stream_t stream_internal_temperature;
 
 // Wind voltage table
 // This was measured with original resistor in wind direction sensor and internal MCU pullup
 // Some values are too close to each other. Better solution will be to use external 4k7 hardware pullup
 // and edit this table to the real ADC values.
-float windVoltageTable[16] = {
-    1.463, // 0° North
-    0.469, // 22.5°
-    0.565, // 45°
-    0.078, // 67.5°
-    0.087, // 90° East
-    0.062, // 112.5°
-    0.179, // 135°
-    0.118, // 157.5°
-    0.298, // 180° South
-    0.247, // 202.5°
-    0.935, // 225°
-    0.859, // 247.5°
-    2.372, // 270° West
-    1.650, // 292.5°
-    1.970, // 315°
-    1.152  // 337.5°
+float windADCTable[16] = {
+    30845, // 0° North
+    9888, // 22.5°
+    11912, // 45°
+    1645, // 67.5°
+    1834, // 90° East
+    1307, // 112.5°
+    3774, // 135°
+    2488, // 157.5°
+    6283, // 180° South
+    5208, // 202.5°
+    19713, // 225°
+    18111, // 247.5°
+    50011, // 270° West
+    34788, // 292.5°
+    41535, // 315°
+    24288  // 337.5°
 };
 
 // Last angle and speed for debug
@@ -95,11 +101,13 @@ void publishRain(void *param)
     (void) param;
 
     //bc_led_pulse(&led, 500);
-    
-    uint32_t battery = (uint32_t)(batteryVoltage * 1000);
+
+    bc_module_battery_get_voltage(&batteryVoltage);
     
     // Publishing to related MQTT topics
-    bc_radio_pub_uint32("meteo/battery",&battery);
+    bc_radio_pub_float("meteo/battery",&batteryVoltage);
+    bc_radio_pub_float("meteo/internalTemperature",&internalTemperatureAverage);
+
     bc_radio_pub_float("meteo/rain",&rainMM);
     bc_radio_pub_float("meteo/rainTotal",&rainTotalMM);
 
@@ -119,7 +127,7 @@ float windVoltageToAngle(float voltage)
 
     for(i = 0; i < 16; i++)
     {
-        float currentDifference = fabs(voltage - windVoltageTable[i]);
+        float currentDifference = fabs(voltage - windADCTable[i]);
         if(smallestDifferenceValue > currentDifference)
         {
             smallestDifferenceValue = currentDifference;
@@ -133,6 +141,17 @@ float windVoltageToAngle(float voltage)
 float windAdcVoltage = 0;
 uint16_t windAdc = 0;
 
+void tmp112_event_handler(bc_tmp112_t *self, bc_tmp112_event_t event, void *event_param)
+{
+    (void) self;
+    (void) event_param;
+
+    if (event == BC_TMP112_EVENT_UPDATE)
+    {
+        bc_tmp112_get_temperature_celsius(&temp, &internalTemperature);
+    }
+}
+
 void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *param)
 {
     (void)param;
@@ -142,39 +161,21 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
     {
         if(channel == BC_ADC_CHANNEL_A5)
         {
-            #define ADC_VALUE_TO_VOLTAGE2(__RESULT__)   (((__RESULT__) * (0.00004743)))
+            //#define ADC_VALUE_TO_VOLTAGE2(__RESULT__)   (((__RESULT__) * (0.00004743)))
+
             // Disable pullup
             bc_module_sensor_set_pull(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_PULL_NONE);
 
             bc_adc_async_get_value(BC_ADC_CHANNEL_A5, &windAdc);
-            windAdcVoltage = ADC_VALUE_TO_VOLTAGE2(windAdc);
-            windAngle = windVoltageToAngle(windAdcVoltage);
+            //windAdcVoltage = ADC_VALUE_TO_VOLTAGE2(windAdc);
+            windAngle = windVoltageToAngle(windAdc);
 
             angle_average_add(windAngle);
             windAngleAverage = angle_average_get();
 
-            //bc_radio_pub_float("meteo/debug/windVoltage",&windAdcVoltage);
-            //uint32_t windAdcPub = (uint32_t)windAdc;
-            //bc_radio_pub_uint32("meteo/debug/windVoltage",&windAdcPub);
-
             // Start battery measurement, default library collides sometimes with ADC measurement
-            // so I use manual solution
-            //_bc_module_battery_measurement(1);
-            bc_gpio_set_output(BC_GPIO_P1, 1);
-            bc_adc_async_measure(BC_ADC_CHANNEL_A0);
+            bc_module_battery_measure();
         }
-        if(channel == BC_ADC_CHANNEL_A0)
-        {
-            #define ADC_VALUE_TO_VOLTAGE(__RESULT__)   (((__RESULT__) * (1 / 0.13)))
-            uint16_t val;
-            bc_adc_get_value(BC_ADC_CHANNEL_A0, &val);
-            bc_gpio_set_output(BC_GPIO_P1, 0);
-
-            batteryVoltage = ADC_VALUE_TO_VOLTAGE(val);
-
-            //bc_radio_pub_float("meteo/debug/windVoltage",&batteryVoltage);
-        }
-
     }
 }
 
@@ -195,11 +196,16 @@ void application_init(void)
     //bc_data_stream_init(&stream_wind_direction, 1/*WIND_DATA_STREAM_SAMPLES*/, &stream_buffer_wind_direction);
     bc_data_stream_init(&stream_wind_speed, 1/*WIND_DATA_STREAM_SAMPLES*/, &stream_buffer_wind_speed);
 
+    //init temperature buffer stream
+    bc_data_stream_init(&stream_internal_temperature, 1/*WIND_DATA_STREAM_SAMPLES*/, &stream_buffer_internal_temperature);
+
     bc_led_init(&led, BC_GPIO_LED, false, false);
 
     // Init internal temperature sensor to lower power sonsumption
-    bc_tag_temperature_init(&temperature_tag_internal, BC_I2C_I2C0, BC_TAG_TEMPERATURE_I2C_ADDRESS_ALTERNATE);
-    bc_tag_temperature_set_update_interval(&temperature_tag_internal, 5000 * 1000); // set big interval
+    bc_tmp112_init(&temp, BC_I2C_I2C0, 0x49);
+
+    // set measurement handler (call "tmp112_event_handler()" after measurement)
+    bc_tmp112_set_event_handler(&temp, tmp112_event_handler, NULL);
 
     // Initialise radio
     bc_radio_init(BC_RADIO_MODE_NODE_SLEEPING);
@@ -214,25 +220,14 @@ void application_init(void)
 
     bc_module_sensor_set_mode(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_MODE_INPUT);
     // Pullup is enabled in the task just before measuring
-    //bc_module_sensor_set_pull(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_PULL_UP_INTERNAL);
 
     // Initialize ADC channel - wind direction
     bc_adc_init();
     bc_adc_set_event_handler(BC_ADC_CHANNEL_A5, adc_event_handler, NULL);
     bc_adc_resolution_set(BC_ADC_CHANNEL_A5, BC_ADC_RESOLUTION_12_BIT);
-    //bc_adc_oversampling_set(BC_ADC_CHANNEL_A5, BC_ADC_OVERSAMPLING_256);
 
-    //bc_adc_set_event_handler(BC_ADC_CHANNEL_A0, adc_event_handler, NULL);
-    //bc_adc_resolution_set(BC_ADC_CHANNEL_A0, BC_ADC_RESOLUTION_12_BIT);
-    //bc_adc_oversampling_set(BC_ADC_CHANNEL_A0, BC_ADC_OVERSAMPLING_256);
-
-    // Battery voltage
-    bc_gpio_init(BC_GPIO_P1);
-    bc_gpio_set_output(BC_GPIO_P1, 0);
-    bc_gpio_set_mode(BC_GPIO_P1, BC_GPIO_MODE_OUTPUT);
-
-    //bc_adc_init();
-    bc_adc_set_event_handler(BC_ADC_CHANNEL_A0, adc_event_handler, NULL);
+    // Battery module voltage
+    bc_module_battery_init();
 
     // Publish scheduler is divided to two tasks (wind data and rain+battery data) one second between each.
     // When these two tasks are together it does not work properly.
@@ -267,6 +262,11 @@ void application_task()
     // Add value to stream and get average
     bc_data_stream_feed(&stream_wind_speed, &windSpeed);
     bc_data_stream_get_average(&stream_wind_speed, &windSpeedAverage);
+
+    // Read temperature and save it to the buffer stream
+    bc_tmp112_measure(&temp);   
+    bc_data_stream_feed(&stream_internal_temperature, &internalTemperature);
+    bc_data_stream_get_average(&stream_internal_temperature, &internalTemperatureAverage);
 
     bc_scheduler_plan_current_relative(MAIN_TASK_PERIOD_SECONDS * 1000);
 }
