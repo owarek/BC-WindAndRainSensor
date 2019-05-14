@@ -10,6 +10,23 @@ Connection of the sensor module:
 Channel A: anemometer (other contact connected to GND)
 Channel B: wind direction (other contact connected to GND)
 Channel C: rainfall switch (other contact connected to GND)
+
+Datasheet
+https://cdn.sparkfun.com/assets/8/4/c/d/6/Weather_Sensor_Assembly_Updated.pdf
+
+Sparkfun
+https://www.sparkfun.com/products/8942
+
+Wether station items
+http://www.meteo-pocasi.cz/eshop/nahradni-dily/meteostanice-me15/
+https://www.conrad.cz/bezdratova-dcf-meteorologicka-stanice-renkforce-aok-5055.k1267773
+
+Rainfall sensor Misol WH-SP-RG
+Wind direction sensor MISOL WH-SP-WD
+Wind speed sensor Misol WH-SP-WS01
+Mounting arms
+https://www.ebay.co.uk/itm/Mounting-arm-for-wind-speed-direction-sensor-spare-part-for-weather-station/272608358706?hash=item3f78b97132:g:86MAAOSw4A5Y2iBK&frcectupt=true
+https://www.ebay.co.uk/itm/Mounting-arm-for-wind-speed-wind-direction-rain-meter-spare-part-for-weather/121918506255?hash=item1c62e8c50f:g:X1UAAOSwoBtW38co
 */
 
 #include <application.h>
@@ -19,7 +36,6 @@ Channel C: rainfall switch (other contact connected to GND)
 
 bc_led_t led;
 bc_tmp112_t temp;
-
 
 float windSpeedAverage = 0;
 float windSpeedMaximum = 0;
@@ -32,6 +48,7 @@ float rainTotalMM = 0;         // mm of rainfall total
 /*
 The rainfall should be calibrated
 Measure the area of the rainfall sensor in centimeters
+inspiration by https://www.instructables.com/id/Arduino-Rain-Gauge-Calibration/
 
 5 cm * 11 cm = 55 cm^2
 
@@ -255,8 +272,8 @@ void application_init(void)
     // When these two tasks are together it does not work properly.
     bc_scheduler_task_id_t publish_wind_task_id = bc_scheduler_register(publish_wind_task, NULL, 0);
     bc_scheduler_task_id_t publish_rain_task_id = bc_scheduler_register(publish_rain_task, NULL, 0);
-    bc_scheduler_plan_relative(publish_wind_task_id, 10 * 1000); // Schedule sending 10 seconds after start
-    bc_scheduler_plan_relative(publish_rain_task_id, 12 * 1000); // Schedule sending 12 seconds after start
+    bc_scheduler_plan_relative(publish_wind_task_id, 20 * 1000); // Schedule sending 20 seconds after start
+    bc_scheduler_plan_relative(publish_rain_task_id, 21 * 1000); // Schedule sending 21 seconds after start
 
     // Initialize radio
     bc_radio_init(BC_RADIO_MODE_NODE_SLEEPING);
