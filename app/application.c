@@ -1,13 +1,15 @@
 /*
 Version: 1.3
 Date: 1.11.2018
-Info:
-Měření rychlosti a směru větru společně se srážkoměrem. Naměřená data jsou navzorkována a poté každých 10 minut odeslána do BigClown hubu.
-Kód převzat a upraven z https://github.com/hubmartin/bcf-sigfox-wind-station
-Zapojení do sensor modulu:
-Kanál A: anemometr (proti zemi)
-Kanál B: korouhvička (proti zemi)
-Kanál C: srážkoměr (proti zemi)
+
+Measurement of wind speed and direction together with rainfall sensor. Data are send every 10 minutes to the BigClown Hub
+
+Original firmware https://github.com/hubmartin/bcf-sigfox-wind-station
+
+Connection of the sensor module:
+Channel A: anemometer (other contact connected to GND)
+Channel B: wind direction (other contact connected to GND)
+Channel C: rainfall switch (other contact connected to GND)
 */
 
 #include <application.h>
@@ -16,7 +18,6 @@ Kanál C: srážkoměr (proti zemi)
 #include "angle_average.h"
 
 bc_led_t led;
-//bc_tag_temperature_t temperature_tag_internal;
 bc_tmp112_t temp;
 
 
@@ -25,11 +26,31 @@ float windSpeedMaximum = 0;
 float windAngleAverage = 0;
 float batteryVoltage = 0;
 
-float rainMM = 0;              // mm srážek od posledního odeslání dat
-float rainTotalMM = 0;         // mm srážek od zapnutí modulu
-float mmInClick = 0.186267;    // mm srážek v jednom impulsu srážkoměru
+float rainMM = 0;              // mm of rainfall from last send data
+float rainTotalMM = 0;         // mm of rainfall total
 
-float internalTemperature = 0; 
+/*
+The rainfall should be calibrated
+Measure the area of the rainfall sensor in centimeters
+
+5 cm * 11 cm = 55 cm^2
+
+Now measure the amount of water in mililiters to get one pulse.
+It is better to start with bigger amount of water and then divide it with a number of pulses you get.
+This averaging helps you get more precise numbers
+
+In my test I need 1.6 ml to a single pulse from the sensor
+
+1 ml = 1 cm^3
+
+My sensor trips with 1.6mm
+
+1.6 cm^3 / 55 cm^3 = 0.029090909.. cm = 0.29090 mm
+*/
+
+#define RAINFALL_PULSE_MM 0.29090f    // millimiters of rainfall in a single pulse from the sensor
+
+float internalTemperature = 0;
 float internalTemperatureAverage = 0;
 bc_switch_t rain_gauge;
 
@@ -73,7 +94,7 @@ float windSpeed;
 void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *param);
 
 // Wind data transmitting function
-void publishWind(void *param)
+void publish_wind_task(void *param)
 {
     (void) param;
 
@@ -82,11 +103,11 @@ void publishWind(void *param)
     int speed = (uint32_t)(windSpeedAverage * 10.0f);
     int speedMaximum = (uint32_t)(windSpeedMaximum * 10.0f);
     int angle = (uint32_t)windAngleAverage;
-    
+
     // Publishing to related MQTT topics
-    bc_radio_pub_int("meteo/speed",&speed);
-    bc_radio_pub_int("meteo/speedMaximum",&speedMaximum);
-    bc_radio_pub_int("meteo/angle",&angle);
+    bc_radio_pub_int("wind/speed/current",&speed);
+    bc_radio_pub_int("wind/speed/maximal",&speedMaximum);
+    bc_radio_pub_int("wind/direction/degrees",&angle);
 
     // Reset the maximum wind speed
     windSpeedMaximum = 0;
@@ -96,20 +117,28 @@ void publishWind(void *param)
 }
 
 // Rain and battery data transmitting function
-void publishRain(void *param)
+void publish_rain_task(void *param)
 {
     (void) param;
 
     //bc_led_pulse(&led, 500);
 
     bc_module_battery_get_voltage(&batteryVoltage);
-    
-    // Publishing to related MQTT topics
-    bc_radio_pub_float("meteo/battery",&batteryVoltage);
-    bc_radio_pub_float("meteo/internalTemperature",&internalTemperatureAverage);
 
-    bc_radio_pub_float("meteo/rain",&rainMM);
-    bc_radio_pub_float("meteo/rainTotal",&rainTotalMM);
+    // Publishing to related MQTT topics
+    if (bc_module_battery_get_format() == BC_MODULE_BATTERY_FORMAT_STANDARD)
+    {
+        bc_radio_pub_float("battery/standard/voltage",&batteryVoltage);
+    }
+    else if (bc_module_battery_get_format() == BC_MODULE_BATTERY_FORMAT_MINI)
+    {
+        bc_radio_pub_float("battery/mini/voltage",&batteryVoltage);
+    }
+
+    bc_radio_pub_float("thermometer/0:1/temperature", &internalTemperatureAverage);
+
+    bc_radio_pub_float("rainfall/interval/mm", &rainMM);
+    bc_radio_pub_float("rainfall/total/mm", &rainTotalMM);
 
     // Reset rain
     rainMM = 0;
@@ -120,7 +149,7 @@ void publishRain(void *param)
 
 float windVoltageToAngle(float voltage)
 {
-    float smallestDifferenceValue = 360.0f; // Set big number
+    float smallestDifferenceValue = 1E8f; // Set big number
     float smallestDifferenceAngle;
 
     uint32_t i;
@@ -180,24 +209,20 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
 }
 
 // Handler for rain gauge interrupt signals
-void clickHandler(bc_switch_t *self, bc_switch_event_t event, void *event_param){
+void rain_counter_handler(bc_switch_t *self, bc_switch_event_t event, void *event_param){
     if (event == BC_SWITCH_EVENT_OPENED)
     {
+        rainTotalMM += RAINFALL_PULSE_MM;
+        rainMM += RAINFALL_PULSE_MM;
     }
-    else if (event == BC_SWITCH_EVENT_CLOSED)
-    {
-    }
-    rainTotalMM += mmInClick;
-    rainMM += mmInClick;
 }
 
 void application_init(void)
 {
-    //bc_data_stream_init(&stream_wind_direction, 1/*WIND_DATA_STREAM_SAMPLES*/, &stream_buffer_wind_direction);
-    bc_data_stream_init(&stream_wind_speed, 1/*WIND_DATA_STREAM_SAMPLES*/, &stream_buffer_wind_speed);
+    bc_data_stream_init(&stream_wind_speed, 1, &stream_buffer_wind_speed);
 
     //init temperature buffer stream
-    bc_data_stream_init(&stream_internal_temperature, 1/*WIND_DATA_STREAM_SAMPLES*/, &stream_buffer_internal_temperature);
+    bc_data_stream_init(&stream_internal_temperature, 1, &stream_buffer_internal_temperature);
 
     bc_led_init(&led, BC_GPIO_LED, false, false);
 
@@ -207,16 +232,13 @@ void application_init(void)
     // set measurement handler (call "tmp112_event_handler()" after measurement)
     bc_tmp112_set_event_handler(&temp, tmp112_event_handler, NULL);
 
-    // Initialise radio
-    bc_radio_init(BC_RADIO_MODE_NODE_SLEEPING);
-
     // Pulse counter
     bc_pulse_counter_init(BC_MODULE_SENSOR_CHANNEL_A, BC_PULSE_COUNTER_EDGE_FALL);
     bc_pulse_counter_set_event_handler(BC_MODULE_SENSOR_CHANNEL_A, NULL, NULL);
 
     // Rain counter
     bc_switch_init(&rain_gauge, BC_GPIO_P7, BC_SWITCH_TYPE_NC, BC_SWITCH_PULL_UP_DYNAMIC);
-    bc_switch_set_event_handler(&rain_gauge, clickHandler, NULL);
+    bc_switch_set_event_handler(&rain_gauge, rain_counter_handler, NULL);
 
     bc_module_sensor_set_mode(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_MODE_INPUT);
     // Pullup is enabled in the task just before measuring
@@ -231,13 +253,17 @@ void application_init(void)
 
     // Publish scheduler is divided to two tasks (wind data and rain+battery data) one second between each.
     // When these two tasks are together it does not work properly.
-    bc_scheduler_task_id_t publishWind_task_id = bc_scheduler_register(publishWind, NULL, 0);
-    bc_scheduler_task_id_t publishRain_task_id = bc_scheduler_register(publishRain, NULL, 0);
-    bc_scheduler_plan_relative(publishWind_task_id, 20 * 1000); // Schedule sending 20 seconds after start
-    bc_scheduler_plan_relative(publishRain_task_id, 21 * 1000); // Schedule sending 20 seconds after start
+    bc_scheduler_task_id_t publish_wind_task_id = bc_scheduler_register(publish_wind_task, NULL, 0);
+    bc_scheduler_task_id_t publish_rain_task_id = bc_scheduler_register(publish_rain_task, NULL, 0);
+    bc_scheduler_plan_relative(publish_wind_task_id, 10 * 1000); // Schedule sending 10 seconds after start
+    bc_scheduler_plan_relative(publish_rain_task_id, 12 * 1000); // Schedule sending 12 seconds after start
+
+    // Initialize radio
+    bc_radio_init(BC_RADIO_MODE_NODE_SLEEPING);
+    bc_radio_pairing_request("wind-station", VERSION);
 
     // Do a single blink to signalize that module is working
-    bc_led_pulse(&led, 1000);
+    bc_led_pulse(&led, 2000);
 }
 
 void application_task()
@@ -245,7 +271,7 @@ void application_task()
     // Enable pullup during wind direction measurement
     bc_module_sensor_set_pull(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_PULL_UP_INTERNAL);
     bc_adc_async_measure(BC_ADC_CHANNEL_A5);
-    
+
     // Reading and reseting wind speed counter
     float counter = (float)bc_pulse_counter_get(BC_MODULE_SENSOR_CHANNEL_A);
     bc_pulse_counter_reset(BC_MODULE_SENSOR_CHANNEL_A);
@@ -264,7 +290,7 @@ void application_task()
     bc_data_stream_get_average(&stream_wind_speed, &windSpeedAverage);
 
     // Read temperature and save it to the buffer stream
-    bc_tmp112_measure(&temp);   
+    bc_tmp112_measure(&temp);
     bc_data_stream_feed(&stream_internal_temperature, &internalTemperature);
     bc_data_stream_get_average(&stream_internal_temperature, &internalTemperatureAverage);
 
