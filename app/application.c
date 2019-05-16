@@ -115,16 +115,10 @@ void publish_wind_task(void *param)
 {
     (void) param;
 
-    //bc_led_pulse(&led, 500);
-
-    int speed = (uint32_t)(windSpeedAverage * 10.0f);
-    int speedMaximum = (uint32_t)(windSpeedMaximum * 10.0f);
-    int angle = (uint32_t)windAngleAverage;
-
     // Publishing to related MQTT topics
-    bc_radio_pub_int("wind/speed/current",&speed);
-    bc_radio_pub_int("wind/speed/maximal",&speedMaximum);
-    bc_radio_pub_int("wind/direction/degrees",&angle);
+    bc_radio_pub_float("wind/speed/current",&windSpeedAverage);
+    bc_radio_pub_float("wind/sped/maximal",&windSpeedMaximum);
+    bc_radio_pub_float("wind/direction/degrees",&windAngleAverage);
 
     // Reset the maximum wind speed
     windSpeedMaximum = 0;
