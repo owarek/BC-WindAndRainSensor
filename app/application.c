@@ -117,7 +117,7 @@ void publish_wind_task(void *param)
 
     // Publishing to related MQTT topics
     bc_radio_pub_float("wind/speed/current",&windSpeedAverage);
-    bc_radio_pub_float("wind/sped/maximal",&windSpeedMaximum);
+    bc_radio_pub_float("wind/speed/maximal",&windSpeedMaximum);
     bc_radio_pub_float("wind/direction/degrees",&windAngleAverage);
 
     // Reset the maximum wind speed
