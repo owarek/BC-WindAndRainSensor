@@ -81,6 +81,39 @@ BC_DATA_STREAM_FLOAT_BUFFER(stream_buffer_internal_temperature, WIND_DATA_STREAM
 bc_data_stream_t stream_wind_speed;
 bc_data_stream_t stream_internal_temperature;
 
+//#define CLIMATE_ENABLE
+
+// Climate module defines
+#define UPDATE_NORMAL_INTERVAL             (10 * 1000)
+#define BAROMETER_UPDATE_NORMAL_INTERVAL   (5 * 60 * 1000)
+
+#define TEMPERATURE_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
+#define TEMPERATURE_TAG_PUB_VALUE_CHANGE 0.2f
+
+#define HUMIDITY_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
+#define HUMIDITY_TAG_PUB_VALUE_CHANGE 5.0f
+
+#define LUX_METER_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
+#define LUX_METER_TAG_PUB_VALUE_CHANGE 25.0f
+
+#define BAROMETER_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
+#define BAROMETER_TAG_PUB_VALUE_CHANGE 20.0f
+
+typedef struct
+{
+    uint8_t channel;
+    float value;
+    bc_tick_t next_pub;
+
+} event_param_t;
+
+struct {
+    event_param_t temperature;
+    event_param_t humidity;
+    event_param_t illuminance;
+    event_param_t pressure;
+} params;
+
 // Wind voltage table
 // This was measured with original resistor in wind direction sensor and internal MCU pullup
 // Some values are too close to each other. Better solution will be to use external 4k7 hardware pullup
@@ -215,6 +248,8 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
 
             // Start battery measurement, default library collides sometimes with ADC measurement
             bc_module_battery_measure();
+
+            //bc_log_debug("adc: %d, angle: %f", windAdc, windAngle);
         }
     }
 }
@@ -228,9 +263,80 @@ void rain_counter_handler(bc_switch_t *self, bc_switch_event_t event, void *even
     }
 }
 
+
+void climate_module_event_handler(bc_module_climate_event_t event, void *event_param)
+{
+    (void) event_param;
+
+    float value;
+
+    if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_THERMOMETER)
+    {
+        if (bc_module_climate_get_temperature_celsius(&value))
+        {
+            if ((fabs(value - params.temperature.value) >= TEMPERATURE_TAG_PUB_VALUE_CHANGE) || (params.temperature.next_pub < bc_scheduler_get_spin_tick()))
+            {
+                bc_radio_pub_temperature(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value);
+                params.temperature.value = value;
+                params.temperature.next_pub = bc_scheduler_get_spin_tick() + TEMPERATURE_TAG_PUB_NO_CHANGE_INTEVAL;
+            }
+        }
+    }
+    else if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_HYGROMETER)
+    {
+        if (bc_module_climate_get_humidity_percentage(&value))
+        {
+            if ((fabs(value - params.humidity.value) >= HUMIDITY_TAG_PUB_VALUE_CHANGE) || (params.humidity.next_pub < bc_scheduler_get_spin_tick()))
+            {
+                bc_radio_pub_humidity(BC_RADIO_PUB_CHANNEL_R3_I2C0_ADDRESS_DEFAULT, &value);
+                params.humidity.value = value;
+                params.humidity.next_pub = bc_scheduler_get_spin_tick() + HUMIDITY_TAG_PUB_NO_CHANGE_INTEVAL;
+            }
+        }
+    }
+    else if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_LUX_METER)
+    {
+        if (bc_module_climate_get_illuminance_lux(&value))
+        {
+            if (value < 1)
+            {
+                value = 0;
+            }
+            if ((fabs(value - params.illuminance.value) >= LUX_METER_TAG_PUB_VALUE_CHANGE) || (params.illuminance.next_pub < bc_scheduler_get_spin_tick()) ||
+                    ((value == 0) && (params.illuminance.value != 0)) || ((value > 1) && (params.illuminance.value == 0)))
+            {
+                bc_radio_pub_luminosity(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value);
+                params.illuminance.value = value;
+                params.illuminance.next_pub = bc_scheduler_get_spin_tick() + LUX_METER_TAG_PUB_NO_CHANGE_INTEVAL;
+            }
+        }
+    }
+    else if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_BAROMETER)
+    {
+        if (bc_module_climate_get_pressure_pascal(&value))
+        {
+            if ((fabs(value - params.pressure.value) >= BAROMETER_TAG_PUB_VALUE_CHANGE) || (params.pressure.next_pub < bc_scheduler_get_spin_tick()))
+            {
+                float meter;
+
+                if (!bc_module_climate_get_altitude_meter(&meter))
+                {
+                    return;
+                }
+
+                bc_radio_pub_barometer(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value, &meter);
+                params.pressure.value = value;
+                params.pressure.next_pub = bc_scheduler_get_spin_tick() + BAROMETER_TAG_PUB_NO_CHANGE_INTEVAL;
+            }
+        }
+    }
+}
+
 void application_init(void)
 {
     bc_data_stream_init(&stream_wind_speed, 1, &stream_buffer_wind_speed);
+
+    //bc_log_init(BC_LOG_LEVEL_DEBUG, BC_LOG_TIMESTAMP_ABS);
 
     //init temperature buffer stream
     bc_data_stream_init(&stream_internal_temperature, 1, &stream_buffer_internal_temperature);
@@ -269,6 +375,17 @@ void application_init(void)
     bc_scheduler_plan_relative(publish_wind_task_id, 20 * 1000); // Schedule sending 20 seconds after start
     bc_scheduler_plan_relative(publish_rain_task_id, 21 * 1000); // Schedule sending 21 seconds after start
 
+    #ifdef CLIMATE_ENABLE
+    // Initialize climate module
+    bc_module_climate_init();
+    bc_module_climate_set_event_handler(climate_module_event_handler, NULL);
+    bc_module_climate_set_update_interval_thermometer(UPDATE_NORMAL_INTERVAL);
+    bc_module_climate_set_update_interval_hygrometer(UPDATE_NORMAL_INTERVAL);
+    bc_module_climate_set_update_interval_lux_meter(UPDATE_NORMAL_INTERVAL);
+    bc_module_climate_set_update_interval_barometer(BAROMETER_UPDATE_NORMAL_INTERVAL);
+    bc_module_climate_measure_all_sensors();
+    #endif
+
     // Initialize radio
     bc_radio_init(BC_RADIO_MODE_NODE_SLEEPING);
     bc_radio_pairing_request("wind-station", VERSION);
@@ -304,6 +421,8 @@ void application_task()
     bc_tmp112_measure(&temp);
     bc_data_stream_feed(&stream_internal_temperature, &internalTemperature);
     bc_data_stream_get_average(&stream_internal_temperature, &internalTemperatureAverage);
+
+    //bc_log_debug("speed %f", windSpeed);
 
     bc_scheduler_plan_current_relative(MAIN_TASK_PERIOD_SECONDS * 1000);
 }
