@@ -33,6 +33,10 @@ To log wind data from MQTT to InfluxDB you need to add this configuration to /et
 
 ```
 
+# Grafana dashboard
+
+import file `grafana-dasboard-import.json` from the repository to display graphs for wind and rain.
+
 ![alt text](https://raw.githubusercontent.com/owarek/BC-WindAndRainSensor/master/img/IMG_20181106_155253.jpg)
 
 --------
