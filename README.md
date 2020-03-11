@@ -1,5 +1,5 @@
 # BC-WindAndRainSensor
-BigClown node with wind vane (speed,gust and angle) and rain gauge. 
+HARDWARIO node with wind vane (speed,gust and angle) and rain gauge. 
 --------
 Connection (to BC sensor module with three channels):  
 Channel A: Anemometer to ground  
