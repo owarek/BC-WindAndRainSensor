@@ -71,9 +71,10 @@ float internalTemperature = 0;
 float internalTemperatureAverage = 0;
 bc_switch_t rain_gauge;
 
-#define MAIN_TASK_PERIOD_SECONDS 15
-#define TRANSMIT_PERIOD_MINUTES 10
+#define MEASURE_INTERVAL_SECONDS 15
+#define TRANSMIT_PERIOD_MINUTES  10
 #define WIND_DATA_STREAM_SAMPLES 40
+#define BATTERY_UPDATE_INTERVAL (60 * 60 * 1000)
 
 // Data stream for wind speed averaging
 BC_DATA_STREAM_FLOAT_BUFFER(stream_buffer_wind_speed, WIND_DATA_STREAM_SAMPLES)
@@ -81,38 +82,11 @@ BC_DATA_STREAM_FLOAT_BUFFER(stream_buffer_internal_temperature, WIND_DATA_STREAM
 bc_data_stream_t stream_wind_speed;
 bc_data_stream_t stream_internal_temperature;
 
-//#define CLIMATE_ENABLE
+#define CLIMATE_ENABLE
 
 // Climate module defines
-#define UPDATE_NORMAL_INTERVAL             (10 * 1000)
-#define BAROMETER_UPDATE_NORMAL_INTERVAL   (5 * 60 * 1000)
-
-#define TEMPERATURE_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
-#define TEMPERATURE_TAG_PUB_VALUE_CHANGE 0.2f
-
-#define HUMIDITY_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
-#define HUMIDITY_TAG_PUB_VALUE_CHANGE 5.0f
-
-#define LUX_METER_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
-#define LUX_METER_TAG_PUB_VALUE_CHANGE 25.0f
-
-#define BAROMETER_TAG_PUB_NO_CHANGE_INTEVAL (15 * 60 * 1000)
-#define BAROMETER_TAG_PUB_VALUE_CHANGE 20.0f
-
-typedef struct
-{
-    uint8_t channel;
-    float value;
-    bc_tick_t next_pub;
-
-} event_param_t;
-
-struct {
-    event_param_t temperature;
-    event_param_t humidity;
-    event_param_t illuminance;
-    event_param_t pressure;
-} params;
+#define TEMPERATURE_TRANSMIT_VALUE_DIFF 1.0f
+#define HUMIDITY_TRANSMIT_VALUE_DIFF 5.0f
 
 // Wind voltage table
 // This was measured with original resistor in wind direction sensor and internal MCU pullup
@@ -263,71 +237,67 @@ void rain_counter_handler(bc_switch_t *self, bc_switch_event_t event, void *even
     }
 }
 
-
 void climate_module_event_handler(bc_module_climate_event_t event, void *event_param)
 {
     (void) event_param;
 
-    float value;
-
     if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_THERMOMETER)
     {
-        if (bc_module_climate_get_temperature_celsius(&value))
+        static struct
         {
-            if ((fabs(value - params.temperature.value) >= TEMPERATURE_TAG_PUB_VALUE_CHANGE) || (params.temperature.next_pub < bc_scheduler_get_spin_tick()))
+            float temperature;
+            bc_tick_t next_pub;
+        } radio_pub = { .next_pub = 0 };
+
+        float temperature;
+
+        if (bc_module_climate_get_temperature_celsius(&temperature))
+        {
+            if ((radio_pub.next_pub < bc_scheduler_get_spin_tick()) || (fabs(temperature - radio_pub.temperature) >= TEMPERATURE_TRANSMIT_VALUE_DIFF))
             {
-                bc_radio_pub_temperature(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value);
-                params.temperature.value = value;
-                params.temperature.next_pub = bc_scheduler_get_spin_tick() + TEMPERATURE_TAG_PUB_NO_CHANGE_INTEVAL;
+                bc_radio_pub_temperature(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &temperature);
+                radio_pub.temperature = temperature;
+                radio_pub.next_pub = bc_scheduler_get_spin_tick() + (TRANSMIT_PERIOD_MINUTES * 60 * 1000);
             }
         }
     }
     else if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_HYGROMETER)
     {
-        if (bc_module_climate_get_humidity_percentage(&value))
+        static struct
         {
-            if ((fabs(value - params.humidity.value) >= HUMIDITY_TAG_PUB_VALUE_CHANGE) || (params.humidity.next_pub < bc_scheduler_get_spin_tick()))
+            float humidity;
+            bc_tick_t next_pub;
+        } radio_pub = { .next_pub = 0 };
+
+        float humidity;
+
+        if (bc_module_climate_get_humidity_percentage(&humidity))
+        {
+            if ((radio_pub.next_pub < bc_scheduler_get_spin_tick()) || (fabs(humidity - radio_pub.humidity) >= HUMIDITY_TRANSMIT_VALUE_DIFF))
             {
-                bc_radio_pub_humidity(BC_RADIO_PUB_CHANNEL_R3_I2C0_ADDRESS_DEFAULT, &value);
-                params.humidity.value = value;
-                params.humidity.next_pub = bc_scheduler_get_spin_tick() + HUMIDITY_TAG_PUB_NO_CHANGE_INTEVAL;
+                bc_radio_pub_humidity(BC_RADIO_PUB_CHANNEL_R3_I2C0_ADDRESS_DEFAULT, &humidity);
+                radio_pub.humidity = humidity;
+                radio_pub.next_pub = bc_scheduler_get_spin_tick() + (TRANSMIT_PERIOD_MINUTES * 60 * 1000);
             }
         }
     }
     else if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_LUX_METER)
     {
-        if (bc_module_climate_get_illuminance_lux(&value))
-        {
-            if (value < 1)
+        float illuminance;
+
+        if (bc_module_climate_get_illuminance_lux(&illuminance))
             {
-                value = 0;
-            }
-            if ((fabs(value - params.illuminance.value) >= LUX_METER_TAG_PUB_VALUE_CHANGE) || (params.illuminance.next_pub < bc_scheduler_get_spin_tick()) ||
-                    ((value == 0) && (params.illuminance.value != 0)) || ((value > 1) && (params.illuminance.value == 0)))
-            {
-                bc_radio_pub_luminosity(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value);
-                params.illuminance.value = value;
-                params.illuminance.next_pub = bc_scheduler_get_spin_tick() + LUX_METER_TAG_PUB_NO_CHANGE_INTEVAL;
-            }
+            bc_radio_pub_luminosity(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &illuminance);
         }
     }
     else if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_BAROMETER)
     {
-        if (bc_module_climate_get_pressure_pascal(&value))
-        {
-            if ((fabs(value - params.pressure.value) >= BAROMETER_TAG_PUB_VALUE_CHANGE) || (params.pressure.next_pub < bc_scheduler_get_spin_tick()))
-            {
+        float pressure;
                 float meter;
 
-                if (!bc_module_climate_get_altitude_meter(&meter))
+        if (bc_module_climate_get_pressure_pascal(&pressure) && bc_module_climate_get_altitude_meter(&meter))
                 {
-                    return;
-                }
-
-                bc_radio_pub_barometer(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &value, &meter);
-                params.pressure.value = value;
-                params.pressure.next_pub = bc_scheduler_get_spin_tick() + BAROMETER_TAG_PUB_NO_CHANGE_INTEVAL;
-            }
+            bc_radio_pub_barometer(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &pressure, &meter);
         }
     }
 }
@@ -379,11 +349,10 @@ void application_init(void)
     // Initialize climate module
     bc_module_climate_init();
     bc_module_climate_set_event_handler(climate_module_event_handler, NULL);
-    bc_module_climate_set_update_interval_thermometer(UPDATE_NORMAL_INTERVAL);
-    bc_module_climate_set_update_interval_hygrometer(UPDATE_NORMAL_INTERVAL);
-    bc_module_climate_set_update_interval_lux_meter(UPDATE_NORMAL_INTERVAL);
-    bc_module_climate_set_update_interval_barometer(BAROMETER_UPDATE_NORMAL_INTERVAL);
-    bc_module_climate_measure_all_sensors();
+    bc_module_climate_set_update_interval_thermometer(MEASURE_INTERVAL_SECONDS * 1000);
+    bc_module_climate_set_update_interval_hygrometer(MEASURE_INTERVAL_SECONDS * 1000);
+    bc_module_climate_set_update_interval_lux_meter(TRANSMIT_PERIOD_MINUTES * 60 * 1000);
+    bc_module_climate_set_update_interval_barometer(TRANSMIT_PERIOD_MINUTES * 60 * 1000);
     #endif
 
     // Initialize radio
@@ -405,7 +374,7 @@ void application_task()
     bc_pulse_counter_reset(BC_MODULE_SENSOR_CHANNEL_A);
 
     // Get current wind speed, one pulse per second ~ 2.4kmph
-    windSpeed = (counter / ((float)MAIN_TASK_PERIOD_SECONDS)) * 0.66666f; // 2.4km/h ~ 0.66666m/s
+    windSpeed = (((float) counter) / ((float)MEASURE_INTERVAL_SECONDS)) * 0.66666f; // 2.4km/h ~ 0.66666m/s
 
     // Save maximum wind speed value
     if(windSpeed > windSpeedMaximum)
@@ -424,5 +393,5 @@ void application_task()
 
     //bc_log_debug("speed %f", windSpeed);
 
-    bc_scheduler_plan_current_relative(MAIN_TASK_PERIOD_SECONDS * 1000);
+    bc_scheduler_plan_current_relative(MEASURE_INTERVAL_SECONDS * 1000);
 }
