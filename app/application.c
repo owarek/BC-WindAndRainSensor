@@ -140,19 +140,6 @@ void publish_rain_task(void *param)
     (void) param;
 
     //bc_led_pulse(&led, 500);
-
-    bc_module_battery_get_voltage(&batteryVoltage);
-
-    // Publishing to related MQTT topics
-    if (bc_module_battery_get_format() == BC_MODULE_BATTERY_FORMAT_STANDARD)
-    {
-        bc_radio_pub_float("battery/standard/voltage",&batteryVoltage);
-    }
-    else if (bc_module_battery_get_format() == BC_MODULE_BATTERY_FORMAT_MINI)
-    {
-        bc_radio_pub_float("battery/mini/voltage",&batteryVoltage);
-    }
-
     bc_radio_pub_float("thermometer/0:1/temperature", &internalTemperatureAverage);
 
     bc_radio_pub_float("rainfall/interval/mm", &rainMM);
@@ -220,10 +207,29 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
             angle_average_add(windAngle);
             windAngleAverage = angle_average_get();
 
-            // Start battery measurement, default library collides sometimes with ADC measurement
-            bc_module_battery_measure();
+            //bc_log_debug("adc: %d, angle: %f windAngleAverage: %f", windAdc, windAngle, windAngleAverage);
+        }
+    }
+}
 
-            //bc_log_debug("adc: %d, angle: %f", windAdc, windAngle);
+void battery_event_handler(bc_module_battery_event_t event, void *event_param)
+{
+    if (event == BC_MODULE_BATTERY_EVENT_UPDATE)
+    {
+        // Read battery voltage
+        if (!bc_module_battery_get_voltage(&batteryVoltage))
+        {
+            return;
+        }
+
+        // Publishing to related MQTT topics
+        if (bc_module_battery_get_format() == BC_MODULE_BATTERY_FORMAT_STANDARD)
+        {
+            bc_radio_pub_float("battery/standard/voltage",&batteryVoltage);
+        }
+        else if (bc_module_battery_get_format() == BC_MODULE_BATTERY_FORMAT_MINI)
+        {
+            bc_radio_pub_float("battery/mini/voltage",&batteryVoltage);
         }
     }
 }
@@ -231,7 +237,7 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
 // Handler for rain gauge interrupt signals
 void rain_counter_handler(bc_switch_t *self, bc_switch_event_t event, void *event_param){
     if (event == BC_SWITCH_EVENT_OPENED)
-    {
+        {
         rainTotalMM += RAINFALL_PULSE_MM;
         rainMM += RAINFALL_PULSE_MM;
     }
@@ -337,6 +343,8 @@ void application_init(void)
 
     // Battery module voltage
     bc_module_battery_init();
+    bc_module_battery_set_event_handler(battery_event_handler, NULL);
+    bc_module_battery_set_update_interval(BATTERY_UPDATE_INTERVAL);
 
     // Publish scheduler is divided to two tasks (wind data and rain+battery data) one second between each.
     // When these two tasks are together it does not work properly.
