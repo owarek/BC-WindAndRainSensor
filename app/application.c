@@ -67,8 +67,6 @@ My sensor trips with 1.6mm
 
 #define RAINFALL_PULSE_MM 0.29090f    // millimiters of rainfall in a single pulse from the sensor
 
-float internalTemperature = 0;
-float internalTemperatureAverage = 0;
 bc_switch_t rain_gauge;
 
 #define MEASURE_INTERVAL_SECONDS 15
@@ -78,9 +76,7 @@ bc_switch_t rain_gauge;
 
 // Data stream for wind speed averaging
 BC_DATA_STREAM_FLOAT_BUFFER(stream_buffer_wind_speed, WIND_DATA_STREAM_SAMPLES)
-BC_DATA_STREAM_FLOAT_BUFFER(stream_buffer_internal_temperature, WIND_DATA_STREAM_SAMPLES)
 bc_data_stream_t stream_wind_speed;
-bc_data_stream_t stream_internal_temperature;
 
 #define CLIMATE_ENABLE
 
@@ -139,9 +135,6 @@ void publish_rain_task(void *param)
 {
     (void) param;
 
-    //bc_led_pulse(&led, 500);
-    bc_radio_pub_float("thermometer/0:1/temperature", &internalTemperatureAverage);
-
     bc_radio_pub_float("rainfall/interval/mm", &rainMM);
     bc_radio_pub_float("rainfall/total/mm", &rainTotalMM);
 
@@ -182,7 +175,12 @@ void tmp112_event_handler(bc_tmp112_t *self, bc_tmp112_event_t event, void *even
 
     if (event == BC_TMP112_EVENT_UPDATE)
     {
-        bc_tmp112_get_temperature_celsius(&temp, &internalTemperature);
+        float temperature;
+
+        if(bc_tmp112_get_temperature_celsius(&temp, &temperature))
+        {
+            bc_radio_pub_temperature(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_ALTERNATE, &temperature);
+        }
     }
 }
 
@@ -305,15 +303,12 @@ void application_init(void)
 
     bc_log_init(BC_LOG_LEVEL_OFF, BC_LOG_TIMESTAMP_ABS);
 
-    //init temperature buffer stream
-    bc_data_stream_init(&stream_internal_temperature, 1, &stream_buffer_internal_temperature);
-
     bc_led_init(&led, BC_GPIO_LED, false, false);
 
     // Init internal temperature sensor to lower power sonsumption
     bc_tmp112_init(&temp, BC_I2C_I2C0, 0x49);
-    // set measurement handler (call "tmp112_event_handler()" after measurement)
     bc_tmp112_set_event_handler(&temp, tmp112_event_handler, NULL);
+    bc_tmp112_set_update_interval(&temp, TRANSMIT_PERIOD_MINUTES * 60 * 1000);
 
     // Pulse counter
     bc_pulse_counter_init(BC_MODULE_SENSOR_CHANNEL_A, BC_PULSE_COUNTER_EDGE_FALL);
@@ -322,7 +317,6 @@ void application_init(void)
     bc_pulse_counter_init(BC_MODULE_SENSOR_CHANNEL_C, BC_PULSE_COUNTER_EDGE_FALL);
 
     bc_module_sensor_set_mode(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_MODE_INPUT);
-    // Pullup is enabled in the task just before measuring
 
     // Initialize ADC channel - wind direction
     bc_adc_init();
@@ -336,10 +330,10 @@ void application_init(void)
 
     // Publish scheduler is divided to two tasks (wind data and rain+battery data) one second between each.
     // When these two tasks are together it does not work properly.
-    bc_scheduler_task_id_t publish_wind_task_id = bc_scheduler_register(publish_wind_task, NULL, 0);
-    bc_scheduler_task_id_t publish_rain_task_id = bc_scheduler_register(publish_rain_task, NULL, 0);
-    bc_scheduler_plan_relative(publish_wind_task_id, 20 * 1000); // Schedule sending 20 seconds after start
-    bc_scheduler_plan_relative(publish_rain_task_id, 21 * 1000); // Schedule sending 21 seconds after start
+    // Create task and schedule sending 20 seconds after start
+    bc_scheduler_register(publish_wind_task, NULL, 20 * 1000);
+    // Create task and schedule schedule sending 22 seconds after start
+    bc_scheduler_register(publish_rain_task, NULL, 22 * 1000);
 
     #ifdef CLIMATE_ENABLE
     // Initialize climate module
@@ -353,7 +347,7 @@ void application_init(void)
 
     // Initialize radio
     bc_radio_init(BC_RADIO_MODE_NODE_SLEEPING);
-    bc_radio_pairing_request("wind-station", VERSION);
+    bc_radio_pairing_request("wind-and-rain-station", VERSION);
 
     // Do a single blink to signalize that module is working
     bc_led_pulse(&led, 2000);
@@ -385,11 +379,6 @@ void application_task()
     bc_data_stream_get_average(&stream_wind_speed, &windSpeedAverage);
 
     bc_log_debug("speed %f", windSpeed);
-
-    // Read temperature and save it to the buffer stream
-    bc_tmp112_measure(&temp);
-    bc_data_stream_feed(&stream_internal_temperature, &internalTemperature);
-    bc_data_stream_get_average(&stream_internal_temperature, &internalTemperatureAverage);
 
     // Rain
     uint32_t cnt = bc_pulse_counter_get(BC_MODULE_SENSOR_CHANNEL_C);
