@@ -2,6 +2,7 @@ SDK_DIR ?= sdk
 VERSION ?= vdev
 
 CFLAGS += -D'VERSION="${VERSION}"'
+CFLAGS += -D'BC_RADIO_RX_QUEUE_BUFFER_SIZE=512'
 
 -include sdk/Makefile.mk
 
