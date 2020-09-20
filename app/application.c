@@ -207,7 +207,7 @@ void adc_event_handler(bc_adc_channel_t channel, bc_adc_event_t event, void *par
             angle_average_add(windAngle);
             windAngleAverage = angle_average_get();
 
-            //bc_log_debug("adc: %d, angle: %f windAngleAverage: %f", windAdc, windAngle, windAngleAverage);
+            bc_log_debug("adc: %d, angle: %f windAngleAverage: %f", windAdc, windAngle, windAngleAverage);
         }
     }
 }
@@ -231,15 +231,6 @@ void battery_event_handler(bc_module_battery_event_t event, void *event_param)
         {
             bc_radio_pub_float("battery/mini/voltage",&batteryVoltage);
         }
-    }
-}
-
-// Handler for rain gauge interrupt signals
-void rain_counter_handler(bc_switch_t *self, bc_switch_event_t event, void *event_param){
-    if (event == BC_SWITCH_EVENT_OPENED)
-        {
-        rainTotalMM += RAINFALL_PULSE_MM;
-        rainMM += RAINFALL_PULSE_MM;
     }
 }
 
@@ -292,17 +283,17 @@ void climate_module_event_handler(bc_module_climate_event_t event, void *event_p
         float illuminance;
 
         if (bc_module_climate_get_illuminance_lux(&illuminance))
-            {
+        {
             bc_radio_pub_luminosity(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &illuminance);
         }
     }
     else if (event == BC_MODULE_CLIMATE_EVENT_UPDATE_BAROMETER)
     {
         float pressure;
-                float meter;
+        float meter;
 
         if (bc_module_climate_get_pressure_pascal(&pressure) && bc_module_climate_get_altitude_meter(&meter))
-                {
+        {
             bc_radio_pub_barometer(BC_RADIO_PUB_CHANNEL_R1_I2C0_ADDRESS_DEFAULT, &pressure, &meter);
         }
     }
@@ -312,7 +303,7 @@ void application_init(void)
 {
     bc_data_stream_init(&stream_wind_speed, 1, &stream_buffer_wind_speed);
 
-    //bc_log_init(BC_LOG_LEVEL_DEBUG, BC_LOG_TIMESTAMP_ABS);
+    bc_log_init(BC_LOG_LEVEL_OFF, BC_LOG_TIMESTAMP_ABS);
 
     //init temperature buffer stream
     bc_data_stream_init(&stream_internal_temperature, 1, &stream_buffer_internal_temperature);
@@ -321,17 +312,14 @@ void application_init(void)
 
     // Init internal temperature sensor to lower power sonsumption
     bc_tmp112_init(&temp, BC_I2C_I2C0, 0x49);
-
     // set measurement handler (call "tmp112_event_handler()" after measurement)
     bc_tmp112_set_event_handler(&temp, tmp112_event_handler, NULL);
 
     // Pulse counter
     bc_pulse_counter_init(BC_MODULE_SENSOR_CHANNEL_A, BC_PULSE_COUNTER_EDGE_FALL);
-    bc_pulse_counter_set_event_handler(BC_MODULE_SENSOR_CHANNEL_A, NULL, NULL);
 
     // Rain counter
-    bc_switch_init(&rain_gauge, BC_GPIO_P7, BC_SWITCH_TYPE_NC, BC_SWITCH_PULL_UP_DYNAMIC);
-    bc_switch_set_event_handler(&rain_gauge, rain_counter_handler, NULL);
+    bc_pulse_counter_init(BC_MODULE_SENSOR_CHANNEL_C, BC_PULSE_COUNTER_EDGE_FALL);
 
     bc_module_sensor_set_mode(BC_MODULE_SENSOR_CHANNEL_B, BC_MODULE_SENSOR_MODE_INPUT);
     // Pullup is enabled in the task just before measuring
@@ -378,8 +366,10 @@ void application_task()
     bc_adc_async_measure(BC_ADC_CHANNEL_A5);
 
     // Reading and reseting wind speed counter
-    float counter = (float)bc_pulse_counter_get(BC_MODULE_SENSOR_CHANNEL_A);
+    uint32_t counter = (float)bc_pulse_counter_get(BC_MODULE_SENSOR_CHANNEL_A);
     bc_pulse_counter_reset(BC_MODULE_SENSOR_CHANNEL_A);
+
+    bc_log_debug("wind cnt: %d", counter);
 
     // Get current wind speed, one pulse per second ~ 2.4kmph
     windSpeed = (((float) counter) / ((float)MEASURE_INTERVAL_SECONDS)) * 0.66666f; // 2.4km/h ~ 0.66666m/s
@@ -394,12 +384,23 @@ void application_task()
     bc_data_stream_feed(&stream_wind_speed, &windSpeed);
     bc_data_stream_get_average(&stream_wind_speed, &windSpeedAverage);
 
+    bc_log_debug("speed %f", windSpeed);
+
     // Read temperature and save it to the buffer stream
     bc_tmp112_measure(&temp);
     bc_data_stream_feed(&stream_internal_temperature, &internalTemperature);
     bc_data_stream_get_average(&stream_internal_temperature, &internalTemperatureAverage);
 
-    //bc_log_debug("speed %f", windSpeed);
+    // Rain
+    uint32_t cnt = bc_pulse_counter_get(BC_MODULE_SENSOR_CHANNEL_C);
+    bc_pulse_counter_reset(BC_MODULE_SENSOR_CHANNEL_C);
+    bc_log_debug("Rain cnt: %d", cnt);
+    if (cnt > 0)
+    {
+        float cntMM = ((float) cnt) * RAINFALL_PULSE_MM;
+        rainTotalMM += cntMM;
+        rainMM += cntMM;
+    }
 
     bc_scheduler_plan_current_relative(MEASURE_INTERVAL_SECONDS * 1000);
 }
